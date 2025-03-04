@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Bitcoin CAGR, Quarterly Chart & Projections (Coinbase API)</title>
+    <style>
+      /* Spinner CSS */
+      .spinner {
+        border: 8px solid #f3f3f3;
+        border-top: 8px solid #a9d6e5;
+        border-radius: 50%;
+        width: 60px;
+        height: 60px;
+        animation: spin 1s linear infinite;
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 9999;
+      }
+      @keyframes spin {
+        0% {
+          transform: translate(-50%, -50%) rotate(0deg);
+        }
+        100% {
+          transform: translate(-50%, -50%) rotate(360deg);
+        }
+      }
+
+      /* Dark blue theme with 25% larger fonts */
+      body {
+        background-color: #0d1b2a;
+        color: #e0e1dd;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        margin: 20px;
+        font-size: 1.25em;
+      }
+      h1,
+      h2,
+      p,
+      ul {
+        color: #a9d6e5;
+      }
+      table {
+        width: 80%;
+        margin-top: 20px;
+        border-collapse: collapse;
+        font-size: 0.9em;
+      }
+      th,
+      td {
+        padding: 10px 12px;
+        border: 1px solid #415a77;
+        text-align: right;
+      }
+      th {
+        background-color: #1b263b;
+        color: #a9d6e5;
+      }
+      td:first-child,
+      th:first-child {
+        text-align: left;
+      }
+      tbody tr:hover {
+        background-color: #415a77;
+      }
+      .chart-container {
+        width: 80%;
+        max-width: 1200px;
+        margin: 30px auto;
+      }
+    </style>
+    <!-- Include Chart.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <!-- Spinner -->
+    <div id="spinner" class="spinner"></div>
+
+    <h1>Bitcoin CAGR, Quarterly Chart & Future Projections</h1>
+    <p>
+      The table below shows whole‑year data (periods 1–10) with current and
+      historical prices (rounded to whole dollars), delta, and CAGR.
+    </p>
+    <!-- Whole-Year Table -->
+    <table id="cagrTable">
+      <thead>
+        <tr>
+          <th>Period (Years)</th>
+          <th>Current (Year / Price)</th>
+          <th>Historical (Year / Price)</th>
+          <th>Delta ($)</th>
+          <th>Delta (%)</th>
+          <th>CAGR (%)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <!-- Quarterly Chart -->
+    <div class="chart-container">
+      <canvas id="quarterCAGRChart"></canvas>
+    </div>
+
+    <!-- Future Projections Table -->
+    <h2>Future Price Projections</h2>
+    <p>
+      Based on the current average quarterly CAGR (red line in the chart), price
+      projections are provided for 5, 10, and 15 years. For each duration the
+      table shows the projected price along with the effective CAGR used (in
+      parentheses) under four scenarios: 100%, 75%, 50%, and 25% of the current
+      average CAGR.
+    </p>
+    <table id="projectionsTable">
+      <thead>
+        <tr>
+          <th>Years</th>
+          <th>100% CAGR<br />(Price, CAGR)</th>
+          <th>75% CAGR<br />(Price, CAGR)</th>
+          <th>50% CAGR<br />(Price, CAGR)</th>
+          <th>25% CAGR<br />(Price, CAGR)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <script>
+      // ----- Utility Functions -----
+
+      // Format a Date as "YYYY-MM-DD" for Coinbase API
+      function formatDate(date) {
+        const yyyy = date.getFullYear();
+        let mm = date.getMonth() + 1; // zero-based
+        let dd = date.getDate();
+        if (mm < 10) mm = "0" + mm;
+        if (dd < 10) dd = "0" + dd;
+        return `${yyyy}-${mm}-${dd}`;
+      }
+
+      // Format price in USD: round to whole dollars, add commas, append " USD"
+      function formatPriceUSD(value) {
+        return (
+          new Intl.NumberFormat("en-US", {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+          }).format(value) + " USD"
+        );
+      }
+
+      // Format percentage with one decimal place, e.g. "30.3%"
+      function formatPercentage(value) {
+        return value.toFixed(1) + "%";
+      }
+
+      // Get quarter label (e.g., "Q2 2023") from a Date object
+      function getQuarterLabel(date) {
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        let quarter;
+        if (month <= 3) quarter = "Q1";
+        else if (month <= 6) quarter = "Q2";
+        else if (month <= 9) quarter = "Q3";
+        else quarter = "Q4";
+        return `${quarter} ${year}`;
+      }
+
+      // ----- Data Fetching (Coinbase API) -----
+
+      // Minimum date for Coinbase data (clamp to 2015-01-01)
+      const minCoinbaseDate = new Date(2015, 0, 1);
+
+      // Fetch BTC-USD spot price from Coinbase. If dateStr is provided, fetch historical price.
+      async function fetchPrice(dateStr = null) {
+        let url = "https://api.coinbase.com/v2/prices/BTC-USD/spot";
+        if (dateStr) {
+          url += `?date=${dateStr}`;
+        }
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data || !data.data || !data.data.amount) {
+          throw new Error("Price data not found in response");
+        }
+        return parseFloat(data.data.amount);
+      }
+
+      // ----- Whole-Year Table Data (Years 1 to 10) -----
+      async function calculateWholeYearData() {
+        const today = new Date();
+        const currentYear = today.getFullYear();
+        const currentPrice = await fetchPrice();
+        window.globalCurrentPrice = currentPrice; // Save for projections
+
+        const periods = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        const results = [];
+
+        for (const years of periods) {
+          let historicalDate = new Date(today);
+          historicalDate.setFullYear(historicalDate.getFullYear() - years);
+          if (historicalDate < minCoinbaseDate) {
+            historicalDate = new Date(minCoinbaseDate);
+          }
+          const historicalYear = historicalDate.getFullYear();
+          const dateStr = formatDate(historicalDate);
+          const historicalPrice = await fetchPrice(dateStr);
+
+          const delta = currentPrice - historicalPrice;
+          const deltaPct = (currentPrice / historicalPrice - 1) * 100;
+          const cagr = Math.pow(currentPrice / historicalPrice, 1 / years) - 1;
+
+          results.push({
+            period: years,
+            currentYear,
+            currentPrice,
+            historicalYear,
+            historicalPrice,
+            delta,
+            deltaPct,
+            cagr: cagr * 100,
+          });
+        }
+
+        const tbody = document.querySelector("#cagrTable tbody");
+        tbody.innerHTML = "";
+        results.forEach((r) => {
+          const row = document.createElement("tr");
+          let td = document.createElement("td");
+          td.textContent = r.period;
+          row.appendChild(td);
+
+          td = document.createElement("td");
+          td.textContent = `${r.currentYear} / ${formatPriceUSD(
+            r.currentPrice
+          )}`;
+          row.appendChild(td);
+
+          td = document.createElement("td");
+          td.textContent = `${r.historicalYear} / ${formatPriceUSD(
+            r.historicalPrice
+          )}`;
+          row.appendChild(td);
+
+          td = document.createElement("td");
+          td.textContent = formatPriceUSD(r.delta);
+          row.appendChild(td);
+
+          td = document.createElement("td");
+          td.textContent = formatPercentage(r.deltaPct);
+          row.appendChild(td);
+
+          td = document.createElement("td");
+          td.textContent = formatPercentage(r.cagr);
+          row.appendChild(td);
+
+          tbody.appendChild(row);
+        });
+      }
+
+      // ----- Quarterly Chart Data (Last 10 Years, starting half a year back) -----
+      async function buildQuarterlyCAGRChart() {
+        const today = new Date();
+        const currentPrice = await fetchPrice();
+
+        // Start from half a year back
+        let chartStartDate = new Date(today);
+        chartStartDate.setMonth(chartStartDate.getMonth() - 6);
+
+        // End date: 10 years before chartStartDate
+        let endDate = new Date(chartStartDate);
+        endDate.setFullYear(endDate.getFullYear() - 10);
+
+        let quarterDates = [];
+        let dt = new Date(chartStartDate);
+        while (dt >= endDate) {
+          quarterDates.push(new Date(dt));
+          dt.setMonth(dt.getMonth() - 3);
+        }
+        quarterDates.reverse();
+
+        let labels = [];
+        let cagrValues = [];
+
+        for (const quarterDate of quarterDates) {
+          let effectiveDate =
+            quarterDate < minCoinbaseDate
+              ? new Date(minCoinbaseDate)
+              : quarterDate;
+          const dateStr = formatDate(effectiveDate);
+          const historicalPrice = await fetchPrice(dateStr);
+          const diffYears =
+            (today.getTime() - effectiveDate.getTime()) /
+            (365.25 * 24 * 3600 * 1000);
+          const cagr =
+            Math.pow(currentPrice / historicalPrice, 1 / diffYears) - 1;
+          labels.push(getQuarterLabel(effectiveDate));
+          cagrValues.push(parseFloat((cagr * 100).toFixed(1)));
+        }
+
+        const sumCagr = cagrValues.reduce((acc, val) => acc + val, 0);
+        const avgCagr = sumCagr / cagrValues.length;
+        window.globalAvgCagr = avgCagr; // Save for projections
+
+        const avgLineData = labels.map(() => parseFloat(avgCagr.toFixed(1)));
+
+        const ctx = document
+          .getElementById("quarterCAGRChart")
+          .getContext("2d");
+        new Chart(ctx, {
+          type: "line",
+          data: {
+            labels,
+            datasets: [
+              {
+                label: "Quarterly CAGR (%)",
+                data: cagrValues,
+                borderColor: "#a9d6e5",
+                backgroundColor: "#a9d6e5",
+                fill: false,
+                tension: 0,
+                pointRadius: 4,
+              },
+              {
+                label: `Average = ${avgCagr.toFixed(1)}%`,
+                data: avgLineData,
+                borderColor: "red",
+                backgroundColor: "red",
+                fill: false,
+                tension: 0,
+                pointRadius: 0,
+                borderDash: [5, 5],
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: {
+                labels: {
+                  font: { size: 20 },
+                },
+              },
+            },
+            scales: {
+              x: {
+                title: {
+                  display: true,
+                  text: "Quarter",
+                  font: { size: 20 },
+                },
+                ticks: {
+                  font: { size: 18 },
+                },
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: "CAGR (%)",
+                  font: { size: 20 },
+                },
+                ticks: {
+                  font: { size: 18 },
+                },
+              },
+            },
+          },
+        });
+      }
+
+      // ----- Future Price Projections Table -----
+      async function buildProjectionsTable() {
+        const currentPrice = window.globalCurrentPrice;
+        const avgCagr = window.globalAvgCagr;
+        if (currentPrice === undefined || avgCagr === undefined) {
+          console.error("Missing global values for projections");
+          return;
+        }
+        const durations = [5, 10, 15];
+        const tbody = document.querySelector("#projectionsTable tbody");
+        tbody.innerHTML = "";
+
+        // Scenarios: multipliers for average CAGR
+        const scenarios = [
+          { label: "100%", factor: 1.0 },
+          { label: "75%", factor: 0.75 },
+          { label: "50%", factor: 0.5 },
+          { label: "25%", factor: 0.25 },
+        ];
+
+        durations.forEach((years) => {
+          const row = document.createElement("tr");
+
+          let td = document.createElement("td");
+          td.textContent = years + " Years";
+          row.appendChild(td);
+
+          scenarios.forEach((scenario) => {
+            // Effective CAGR (as a percentage) for this scenario:
+            const effectiveCagrPct = scenario.factor * avgCagr;
+            // Convert effective CAGR to decimal:
+            const effectiveRate = effectiveCagrPct / 100;
+            // Projected price = currentPrice * (1 + effectiveRate)^years
+            const projPrice = currentPrice * Math.pow(1 + effectiveRate, years);
+            td = document.createElement("td");
+            // Display as: "$X USD (Y.Y%)"
+            td.textContent = `${formatPriceUSD(projPrice)} (${formatPercentage(
+              effectiveCagrPct
+            )})`;
+            row.appendChild(td);
+          });
+
+          tbody.appendChild(row);
+        });
+      }
+
+      // ----- Load Data and Build Everything -----
+      async function loadData() {
+        try {
+          await Promise.all([
+            calculateWholeYearData(),
+            buildQuarterlyCAGRChart(),
+          ]);
+          await buildProjectionsTable();
+        } catch (err) {
+          console.error(err);
+        } finally {
+          document.getElementById("spinner").style.display = "none";
+        }
+      }
+
+      loadData();
+    </script>
+  </body>
+</html>
